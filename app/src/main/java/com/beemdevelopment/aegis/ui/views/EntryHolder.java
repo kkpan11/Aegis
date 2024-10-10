@@ -50,6 +50,7 @@ public class EntryHolder extends RecyclerView.ViewHolder {
     private View _favoriteIndicator;
     private TextView _profileName;
     private TextView _profileCode;
+    private TextView _nextProfileCode;
     private TextView _profileIssuer;
     private TextView _profileCopied;
     private ImageView _profileDrawable;
@@ -60,7 +61,6 @@ public class EntryHolder extends RecyclerView.ViewHolder {
     private ViewMode _viewMode;
 
     private final ImageView _selected;
-    private final Handler _selectedHandler;
 
     private Preferences.CodeGrouping _codeGrouping = Preferences.CodeGrouping.NO_GROUPING;
     private AccountNamePosition _accountNamePosition = AccountNamePosition.HIDDEN;
@@ -72,8 +72,10 @@ public class EntryHolder extends RecyclerView.ViewHolder {
     private MaterialCardView _view;
 
     private UiRefresher _refresher;
-    private Handler _animationHandler;
+    private Handler _copyAnimationHandler;
+    private Handler _expirationHandler;
     private AnimatorSet _expirationAnimSet;
+    private boolean _showNextCode;
     private boolean _showExpirationState;
 
     private Animation _scaleIn;
@@ -85,6 +87,7 @@ public class EntryHolder extends RecyclerView.ViewHolder {
         _view = (MaterialCardView) view;
         _profileName = view.findViewById(R.id.profile_account_name);
         _profileCode = view.findViewById(R.id.profile_code);
+        _nextProfileCode = view.findViewById(R.id.next_profile_code);
         _profileIssuer = view.findViewById(R.id.profile_issuer);
         _profileCopied = view.findViewById(R.id.profile_copied);
         _description = view.findViewById(R.id.description);
@@ -94,8 +97,8 @@ public class EntryHolder extends RecyclerView.ViewHolder {
         _dragHandle = view.findViewById(R.id.drag_handle);
         _favoriteIndicator = view.findViewById(R.id.favorite_indicator);
 
-        _selectedHandler = new Handler();
-        _animationHandler = new Handler();
+        _copyAnimationHandler = new Handler();
+        _expirationHandler = new Handler();
 
         _progressBar = view.findViewById(R.id.progressBar);
 
@@ -115,7 +118,7 @@ public class EntryHolder extends RecyclerView.ViewHolder {
         });
     }
 
-    public void setData(VaultEntry entry, Preferences.CodeGrouping groupSize, ViewMode viewMode, AccountNamePosition accountNamePosition, boolean showIcon, boolean showProgress, boolean hidden, boolean paused, boolean dimmed, boolean showExpirationState) {
+    public void setData(VaultEntry entry, Preferences.CodeGrouping groupSize, ViewMode viewMode, AccountNamePosition accountNamePosition, boolean showIcon, boolean showProgress, boolean hidden, boolean paused, boolean dimmed, boolean showExpirationState, boolean showNextCode) {
         _entry = entry;
         _hidden = hidden;
         _paused = paused;
@@ -129,8 +132,9 @@ public class EntryHolder extends RecyclerView.ViewHolder {
 
         _selected.clearAnimation();
         _selected.setVisibility(View.GONE);
-        _selectedHandler.removeCallbacksAndMessages(null);
-        _animationHandler.removeCallbacksAndMessages(null);
+        _copyAnimationHandler.removeCallbacksAndMessages(null);
+        _expirationHandler.removeCallbacksAndMessages(null);
+        _showNextCode = entry.getInfo() instanceof TotpInfo && showNextCode;
         _showExpirationState = _entry.getInfo() instanceof TotpInfo && showExpirationState;
 
         _favoriteIndicator.setVisibility(_entry.isFavorite() ? View.VISIBLE : View.INVISIBLE);
@@ -140,6 +144,7 @@ public class EntryHolder extends RecyclerView.ViewHolder {
 
         // only show the button if this entry is of type HotpInfo
         _buttonRefresh.setVisibility(entry.getInfo() instanceof HotpInfo ? View.VISIBLE : View.GONE);
+        _nextProfileCode.setVisibility(_showNextCode ? View.VISIBLE : View.GONE);
 
         String profileIssuer = entry.getIssuer();
         String profileName = entry.getName();
@@ -284,16 +289,24 @@ public class EntryHolder extends RecyclerView.ViewHolder {
 
     public void refreshCode() {
         if (!_hidden && !_paused) {
-            updateCode();
+            updateCodes();
             startExpirationAnimation();
         }
     }
 
-    private void updateCode() {
+    private void updateCodes() {
         _profileCode.setText(getOtp());
+
+        if (_showNextCode) {
+            _nextProfileCode.setText(getOtp(1));
+        }
     }
 
     private String getOtp() {
+        return getOtp(0);
+    }
+
+    private String getOtp(int offset) {
         OtpInfo info = _entry.getInfo();
 
         // In previous versions of Aegis, it was possible to import entries with an empty
@@ -302,7 +315,12 @@ public class EntryHolder extends RecyclerView.ViewHolder {
         // the OTP, instead of crashing.
         String otp;
         try {
-            otp = info.getOtp();
+            if (info instanceof TotpInfo) {
+                otp = ((TotpInfo)info).getOtp((System.currentTimeMillis() / 1000) + ((long) (offset) * ((TotpInfo) _entry.getInfo()).getPeriod()));
+            } else {
+                otp = info.getOtp();
+            }
+
             if (!(info instanceof SteamInfo || info instanceof YandexInfo)) {
                 otp = formatCode(otp);
             }
@@ -343,7 +361,7 @@ public class EntryHolder extends RecyclerView.ViewHolder {
     }
 
     public void revealCode() {
-        updateCode();
+        updateCodes();
         startExpirationAnimation();
         _hidden = false;
     }
@@ -352,6 +370,7 @@ public class EntryHolder extends RecyclerView.ViewHolder {
         String code = getOtp();
         String hiddenText = code.replaceAll("\\S", Character.toString(HIDDEN_CHAR));
         updateTextViewWithDots(_profileCode,  hiddenText, code);
+        updateTextViewWithDots(_nextProfileCode,  hiddenText, code);
         stopExpirationAnimation();
         _hidden = true;
     }
@@ -416,7 +435,7 @@ public class EntryHolder extends RecyclerView.ViewHolder {
             if (info.getMillisTillNextRotation() < totalStateDuration) {
                 _profileCode.setTextColor(color);
             } else {
-                _animationHandler.postDelayed(() -> {
+                _expirationHandler.postDelayed(() -> {
                     _profileCode.setTextColor(color);
                 }, info.getMillisTillNextRotation() - totalStateDuration);
             }
@@ -452,6 +471,7 @@ public class EntryHolder extends RecyclerView.ViewHolder {
     }
 
     private void stopExpirationAnimation() {
+        _expirationHandler.removeCallbacksAndMessages(null);
         if (_expirationAnimSet != null) {
             _expirationAnimSet.cancel();
             _expirationAnimSet = null;
@@ -480,7 +500,7 @@ public class EntryHolder extends RecyclerView.ViewHolder {
         if (_paused) {
             stopExpirationAnimation();
         } else if (!_hidden) {
-            updateCode();
+            updateCodes();
             startExpirationAnimation();
         }
     }
@@ -494,7 +514,7 @@ public class EntryHolder extends RecyclerView.ViewHolder {
     }
 
     public void animateCopyText() {
-        _animationHandler.removeCallbacksAndMessages(null);
+        _copyAnimationHandler.removeCallbacksAndMessages(null);
 
         Animation slideDownFadeIn = AnimationsHelper.loadScaledAnimation(itemView.getContext(), R.anim.slide_down_fade_in);
         Animation slideDownFadeOut = AnimationsHelper.loadScaledAnimation(itemView.getContext(), R.anim.slide_down_fade_out);
@@ -507,7 +527,7 @@ public class EntryHolder extends RecyclerView.ViewHolder {
             View fadeOutView = (_accountNamePosition == AccountNamePosition.BELOW) ? _profileName : _description;
             fadeOutView.startAnimation(slideDownFadeOut);
 
-            _animationHandler.postDelayed(() -> {
+            _copyAnimationHandler.postDelayed(() -> {
                 _profileCopied.startAnimation(fadeOut);
                 fadeOutView.startAnimation(fadeIn);
             }, 3000);
@@ -517,7 +537,7 @@ public class EntryHolder extends RecyclerView.ViewHolder {
             _profileCopied.startAnimation(fadeIn);
             visibleProfileText.startAnimation(fadeOut);
 
-            _animationHandler.postDelayed(() -> {
+            _copyAnimationHandler.postDelayed(() -> {
                 _profileCopied.startAnimation(fadeOut);
                 visibleProfileText.startAnimation(fadeIn);
             }, 3000);
